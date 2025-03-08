@@ -14,12 +14,16 @@ import mimetypes
 
 mcp = FastMCP("enhanced_gmail_mcp_server")
 
-# Extended OAuth2 scopes for full email functionality
+
+# Combine Gmail and Calendar scopes
 SCOPES = [
     'https://www.googleapis.com/auth/gmail.readonly',
     'https://www.googleapis.com/auth/gmail.send',
-    'https://www.googleapis.com/auth/gmail.modify'
+    'https://www.googleapis.com/auth/gmail.modify',
+    'https://www.googleapis.com/auth/calendar',
+    'https://www.googleapis.com/auth/calendar.events'
 ]
+
 
 def get_gmail_service():
     """Authenticate and return authorized Gmail API service instance."""
@@ -40,6 +44,23 @@ def get_gmail_service():
             pickle.dump(creds, token)
     
     return build('gmail', 'v1', credentials=creds)
+
+def get_calendar_service():
+    """Authenticate and return Calendar service using existing credentials"""
+    creds = None
+    if os.path.exists('token.pickle'):
+        with open('token.pickle', 'rb') as token:
+            creds = pickle.load(token)
+    
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        
+        with open('token.pickle', 'wb') as token:
+            pickle.dump(creds, token)
+    
+    return build('calendar', 'v3', credentials=creds)
+
 
 @mcp.tool()
 def get_inbox_emails(max_results: int = 10) -> List[dict]:
@@ -300,6 +321,77 @@ def get_sent_emails(max_results: int = 10) -> List[dict]:
     
     except Exception as e:
         return {'error': str(e)}
+
+@mcp.tool()
+def get_calendar_events(
+    time_min: str = None,
+    time_max: str = None,
+    max_results: int = 10
+) -> List[dict]:
+    """Retrieve calendar events with time filters"""
+    try:
+        service = get_calendar_service()
+        events_result = service.events().list(
+            calendarId='primary',
+            timeMin=time_min,
+            timeMax=time_max,
+            maxResults=max_results,
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+        
+        return [{
+            'id': event['id'],
+            'summary': event.get('summary'),
+            'start': event['start'].get('dateTime', event['start'].get('date')),
+            'end': event['end'].get('dateTime', event['end'].get('date')),
+            'attendees': [a['email'] for a in event.get('attendees', [])],
+            'status': event.get('status'),
+            'hangoutLink': event.get('hangoutMeetLink')
+        } for event in events_result.get('items', [])]
+    
+    except Exception as e:
+        return {'error': str(e)}
+
+@mcp.tool()
+def create_calendar_event(
+    summary: str,
+    start: str,
+    end: str,
+    attendees: List[str] = None,
+    description: str = ""
+) -> dict:
+    """Create new calendar event with video conference"""
+    try:
+        service = get_calendar_service()
+        event = {
+            'summary': summary,
+            'description': description,
+            'start': {'dateTime': start},
+            'end': {'dateTime': end},
+            'attendees': [{'email': email} for email in attendees] if attendees else [],
+            'conferenceData': {
+                'createRequest': {
+                    'requestId': 'mcp-' + str(os.urandom(16).hex())
+                }
+            }
+        }
+        
+        created_event = service.events().insert(
+            calendarId='primary',
+            body=event,
+            conferenceDataVersion=1
+        ).execute()
+        
+        return {
+            'id': created_event['id'],
+            'htmlLink': created_event.get('htmlLink'),
+            'hangoutLink': created_event.get('hangoutMeetLink')
+        }
+    
+    except Exception as e:
+        return {'error': str(e)}
+
 
 if __name__ == "__main__":
     print("Starting Enhanced Gmail MCP Server...")
